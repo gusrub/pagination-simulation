@@ -29,11 +29,17 @@ class OrderCollection
 
     loop do
       if (index += 1) < data.length
+        break if index >= @limit && @limit.positive?
         yield data[index]
       else
         break if records_fetched == records_total || records_fetched == @limit
 
         index = 0
+        @page_size = if (records_fetched + @page_size) > @limit && @limit.positive?
+                       @limit - records_fetched
+                     else
+                       @page_size
+                     end
         result = APIClient.get_next_orders records_fetched + @offset, @page_size, **@filters
         data = result[:data]
         records_fetched += result[:data].length
@@ -47,30 +53,78 @@ class OrderCollection
 end
 
 describe OrderCollection do
-    it "should return 100 orders" do
-      allow(APIClient).to receive(:get_next_orders) do |start, length|
-          {
-              data: (1..100).to_a[start,length],
-              records_total: 100,
-              records_filtered: 100
-          }
-      end
+  let(:offset) { 0 }
+  let(:offset_index) { offset + 1 }
+  let(:limit) { -1 }
+  let(:page_size) { 10 }
+  let(:filters) { {} }
 
-      items = OrderCollection.new()
+  let(:records_total) { 100 }
+  let(:records_filtered) { 100 }
+  let(:data) { (1..records_filtered).to_a }
+  let(:items) { OrderCollection.new(offset, limit, page_size, **filters) }
 
-      expect(items.to_a).to eq((1..100).to_a)
+  before(:each) do
+    allow(APIClient).to receive(:get_next_orders) do |start, length|
+        {
+            data: data.to_a[start,length],
+            records_total: records_total,
+            records_filtered: records_filtered
+        }
     end
+  end
+
+  context "when not using filters" do
+    it "should return all orders" do
+      expect(items.to_a).to eq((1..records_total).to_a)
+    end
+
+    context "when using a position (offset)" do
+      let(:offset) { 85 }
+
+      it "only returns records after the offset" do
+        expect(items.to_a).to eq((offset_index..records_total).to_a)
+      end
+    end
+
+    context "when using a position and a limit" do
+      let(:offset) { 25 }
+      let(:limit) { 50 }
+
+      it "only returns records after the offset and before the limit" do
+        expect(items.to_a).to eq((offset_index..(offset+limit)).to_a)
+      end
+    end
+
+    context "when using a page size" do
+      let(:page_size) { 20 }
+      let(:request_count) { records_total / page_size }
+
+      it "calls n times only based on batch size" do
+        expect(APIClient).to receive(:get_next_orders).exactly(request_count).times
+        items.to_a
+      end
+    end
+
+    context "when using a limit and page size" do
+      let(:limit) { 50 }
+      let(:page_size) { 20 }
+      let(:request_count) { (limit.to_f / page_size.to_f).ceil }
+
+      it "calls n times only based on batch size" do
+        expect(APIClient).to receive(:get_next_orders).exactly(request_count).times
+        items.to_a
+      end
+    end
+  end
+
+  context "when a filter is being used" do
+    let(:records_filtered) { 50 }
+    let(:data) { (1..records_filtered).to_a }
+    let(:filters) { { some_filter: "some_value" } }
 
     it "should return 50 orders" do
-      allow(APIClient).to receive(:get_next_orders) do |start, length|
-          {
-              data: (1..50).to_a[start,length],
-              records_total: 100,
-              records_filtered: 50
-          }
-      end
-
-      items = OrderCollection.new(0, 50)
-      expect(items.to_a).to eq((1..50).to_a)
+      expect(items.to_a).to eq((1..records_filtered).to_a)
     end
+  end
 end
