@@ -40,7 +40,7 @@ class OrderCollection
                      else
                        @page_size
                      end
-        result = APIClient.get_next_orders records_fetched + @offset, @page_size, **@filters
+        result = pull_data(records_fetched + @offset, @page_size, **@filters)
         data = result[:data]
         records_fetched += result[:data].length
         records_total = result[:records_total]
@@ -48,6 +48,22 @@ class OrderCollection
         break if data.count.zero?
         yield data[index]
       end
+    end
+  end
+
+  def pull_data(offset, page_size, **filters)
+    retries = ENV['MAX_RETRIES'] || 3
+
+    retries.to_i.times do |t|
+      begin
+        result = APIClient.get_next_orders(offset, page_size, filters)
+        result[:data] ||= []
+      rescue Errno::ECONNREFUSED => e
+        next unless t < retries
+        raise e
+      end
+
+      return result unless result.nil?
     end
   end
 end
@@ -126,5 +142,24 @@ describe OrderCollection do
     it "should return 50 orders" do
       expect(items.to_a).to eq((1..records_filtered).to_a)
     end
+
+    context "when there are just a few records left" do
+      let(:records_filtered) { 78 }
+      let(:offset) { 75 }
+
+      it "only pulls the remaining" do
+        expect(items.to_a).to eq((offset_index..records_filtered).to_a)
+      end
+    end
+  end
+
+  context "when an external error happens" do
+   before(:each) do
+     allow(APIClient).to receive(:get_next_orders).and_raise(Errno::ECONNREFUSED)
+   end
+
+   it "raises expected error" do
+     expect{ items.to_a }.to raise_error(Errno::ECONNREFUSED, "Connection refused")
+   end
   end
 end
